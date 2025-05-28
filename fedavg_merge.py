@@ -1,10 +1,6 @@
 import torch
-
-model_paths = [
-    "results/client1_3/final_model/model_weights.pt",
-    "results/client2_3/final_model/model_weights.pt",
-    "results/client3_3/final_model/model_weights.pt"
-]
+import os
+import argparse
 
 def average_weights(model_paths):
     avg_state_dict = None
@@ -21,7 +17,16 @@ def average_weights(model_paths):
 
     return avg_state_dict
 
-# 저장
-avg_weights = average_weights(model_paths)
-torch.save(avg_weights, "results/fedavg_merge_3/model_weights.pt")
-print("✅ 평균 모델 저장 완료: results/fedavg_merge_3/model_weights.pt")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input_dirs", nargs='+', required=True, help="List of input directories containing model_weights.pt")
+    parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the averaged model")
+    args = parser.parse_args()
+
+    model_paths = [os.path.join(d, "final_model", "model_weights.pt") for d in args.input_dirs]
+    avg_weights = average_weights(model_paths)
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    output_path = os.path.join(args.output_dir, "model_weights.pt")
+    torch.save(avg_weights, output_path)
+    print(f"✅ 평균 모델 저장 완료: {output_path}")

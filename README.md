@@ -31,9 +31,21 @@ python run.py
 ```
 
 ### 3. Federated Simulation (Optional)
+#### Step 1. Train each client model
 ```bash
-python fedavg_merge.py     # Merge client checkpoints (FedAvg)
-python fedavg_test.py      # Evaluate the averaged model
+python run.py --data_dir data/client1 --output_dir results/client1
+python run.py --data_dir data/client2 --output_dir results/client2
+python run.py --data_dir data/client3 --output_dir results/client3
+```
+
+#### Step 2. Merge models using FedAvg
+```bash
+python fedavg_merge.py
+```
+
+#### Step 3. Evaluate the merged model
+```bash
+python fedavg_test.py
 ```
 
 ## ✍️ Author
