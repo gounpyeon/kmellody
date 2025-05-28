@@ -3,8 +3,6 @@
 Multi-task learning model for ADMET property prediction based on DrugBank data, using ChemBERTa as encoder.  
 Supports both centralized training and federated learning simulation (FedAvg) for research purposes.
 
----
-
 ## 📂 Directory Structure
 ```
 .
@@ -19,7 +17,6 @@ Supports both centralized training and federated learning simulation (FedAvg) fo
 ├── results/             # Checkpoints, logs, and test results
 └── requirements.txt     # Python dependencies
 ```
----
 
 ## 🚀 How to Run
 
