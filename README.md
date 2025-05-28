@@ -40,12 +40,15 @@ python run.py --data_dir data/client3 --output_dir results/client3
 
 #### Step 2. Merge models using FedAvg
 ```bash
-python fedavg_merge.py
+python fedavg_merge.py \
+    --input_dirs results/client1 results/client2 results/client3 \
+    --output_dir results/fedavg_merge
 ```
-
 #### Step 3. Evaluate the merged model
 ```bash
-python fedavg_test.py
+python fedavg_test.py \
+    --data_dir data/ \
+    --model_path results/fedavg_merge/model_weights.pt
 ```
 
 ## ✍️ Author
