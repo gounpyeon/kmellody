@@ -6,6 +6,7 @@ Supports both centralized training and federated learning simulation (FedAvg) fo
 ---
 
 ## 📂 Directory Structure
+```
 .
 ├── data/                # DrugBank-derived data split into clients (for federated sim)
 ├── model.py             # ChemBERTa-based multi-task model
@@ -17,7 +18,7 @@ Supports both centralized training and federated learning simulation (FedAvg) fo
 ├── fedavg_test.py       # Evaluates merged model
 ├── results/             # Checkpoints, logs, and test results
 └── requirements.txt     # Python dependencies
-
+```
 ---
 
 ## 🚀 How to Run
@@ -40,4 +41,4 @@ python fedavg_test.py      # Evaluate the averaged model
 
 ## ✍️ Author
 
-Developed by [Your Name / Lab / Affiliation if needed]
+Developed by [Goun Pyeon / ISoftLab / Chungnam National University]
