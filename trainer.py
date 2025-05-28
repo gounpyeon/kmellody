@@ -29,7 +29,7 @@ class ChemBERTaTrainer:
                  use_attention: bool = True,
                  hidden_dim: int = 256,
                  task_weights: Optional[Dict[str, float]] = None,
-                 early_stopping_patience: int = 3):
+                 early_stopping_patience: int = 10):
 
         self.model_name = model_name
         self.data_folder = data_folder
@@ -65,6 +65,14 @@ class ChemBERTaTrainer:
             data_type=self.data_type
         )
         self.data_module.setup()
+
+        import json
+
+        vocab_dir = os.path.join(self.output_dir, "vocab")
+        os.makedirs(vocab_dir, exist_ok=True)
+        for task, vocab in self.data_module.all_vocabs.items():
+            with open(os.path.join(vocab_dir, f"{task}.json"), "w") as f:
+                json.dump(vocab, f)
 
         num_classes = None
         if self.task_type == 'cls':
@@ -149,6 +157,15 @@ class ChemBERTaTrainer:
     def load_model(self, path):
         if self.model is None:
             self.setup()
+
+        import json
+        vocab_dir = os.path.join(path, "vocab")
+        if os.path.exists(vocab_dir):
+            for file in os.listdir(vocab_dir):
+                if file.endswith(".json"):
+                    task = file.replace(".json", "")
+                    with open(os.path.join(vocab_dir, file), "r") as f:
+                        self.data_module.all_vocabs[task] = json.load(f)
 
         ckpt_path = os.path.join(path, "best_model.ckpt")
         weights_path = os.path.join(path, "model_weights.pt")
