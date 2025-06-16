@@ -12,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
 
 from utils import (
-    NORMAL_FILTER_COLS, REDUCE_FILTER_COLS,
+    NORMAL_FILTER_COLS, REDUCE_FILTER_COLS, DIDB_FILTER_COLS, DIDB_REDUCE_FILTER_COLS,
     INT_COLS, FLOAT_COLS,
     standard_scaling, load_vocabs, prepare_reduced_dataset, get_task_list
 )
@@ -46,6 +46,10 @@ class ChemMultiTaskDataset(Dataset):
             self.filter_cols = NORMAL_FILTER_COLS
         elif data_type == 'reduce': # reduce
             self.filter_cols = REDUCE_FILTER_COLS
+        elif data_type == 'didb':
+            self.filter_cols = DIDB_FILTER_COLS
+        elif data_type == 'didb_reduce':
+            self.filter_cols = DIDB_REDUCE_FILTER_COLS
         elif data_type == 'none':
             self.filter_cols = []
         else:
@@ -75,16 +79,18 @@ class ChemMultiTaskDataset(Dataset):
         """데이터셋에서 idx번째 항목 반환"""
         row = self.df.iloc[idx]
         
-        # 범주형 특성 처리
-        cat_features = []
-        for col in self.filter_cols:
-            cat_features.append(torch.tensor([int(row[col])], dtype=torch.long))
-        
-        # 정수형 특성 처리
-        int_features = torch.tensor([row[col] for col in INT_COLS], dtype=torch.float32).unsqueeze(0)
-        
-        # 실수형 특성 처리
-        float_features = torch.tensor([row[col] for col in FLOAT_COLS], dtype=torch.float32).unsqueeze(0)
+        if self.data_type == 'didb_reduce':
+            # 모든 특성을 float 타입으로 처리
+            float_features = torch.tensor([row[col] for col in self.filter_cols], dtype=torch.float32).unsqueeze(0)
+            tensor_features = [float_features]  # 리스트로 감싸서 반환
+        else:
+            # 범주형 특성 처리
+            cat_features = []
+            for col in self.filter_cols:
+                cat_features.append(torch.tensor([int(row[col])], dtype=torch.long))
+            int_features = torch.tensor([row[col] for col in INT_COLS], dtype=torch.float32).unsqueeze(0)
+            float_features = torch.tensor([row[col] for col in FLOAT_COLS], dtype=torch.float32).unsqueeze(0)
+            tensor_features = cat_features + [int_features, float_features]
         
         # 출력 레이블 처리
         if self.task_type == 'cls':
@@ -104,9 +110,10 @@ class ChemMultiTaskDataset(Dataset):
         
         # 결과 반환
         result = {
-            'features': cat_features + [int_features, float_features],
+            'features': tensor_features,
             'labels': labels
         }
+        
         
         # Transformer 입력이 있는 경우
         if self.model_name is not None:
@@ -164,6 +171,14 @@ class ChemMultiTaskDataModule:
             self.filter_cols = []
             from utils import NORMAL_CLS_COLS   # task list 동일하게 사용
             base_cols = NORMAL_CLS_COLS
+        elif data_type == 'didb':
+            from utils import DIDB_FILTER_COLS
+            self.filter_cols = DIDB_FILTER_COLS
+            base_cols = DIDB_FILTER_COLS
+        elif data_type == 'didb_reduce':
+            from utils import DIDB_REDUCE_FILTER_COLS
+            self.filter_cols = DIDB_REDUCE_FILTER_COLS
+            base_cols = DIDB_REDUCE_FILTER_COLS
         else:
             raise ValueError(f"Unknown data_type: {data_type}")
 
@@ -173,19 +188,38 @@ class ChemMultiTaskDataModule:
         # 태스크 목록 설정
         if task_type == 'cls':
             self.task_list = [f'{x}.cls' for x in base_cols]
-        else:  # reg
+        else:  # reg and multi_reg
             self.task_list = base_cols
         
         # 데이터 로딩
-        x_path = os.path.join(data_folder, 'admet_X.tsv')
-        y_path = os.path.join(data_folder, 'admet_Y.tsv')
-        scaler_path = os.path.join(data_folder, 'scale_config.csv')
+        if data_type == 'didb_reduce':
+            self.all_df = pd.read_csv(os.path.join(data_folder, 'processed_admet_data.csv'))
+            scaler_path = os.path.join(data_folder, 'scale_config_didb.csv')
+
+            # DIDB 데이터의 경우 filter_cols의 측정치가 있는 행만 추출
+            valid_rows = self.all_df[self.filter_cols].notna().any(axis=1)
+            self.all_df = self.all_df[valid_rows].reset_index(drop=True)
+
+            # 0~10 사이의 값만 유지
+            for col in self.filter_cols:
+                mask = (self.all_df[col] >= 0) & (self.all_df[col] <= 10)
+                self.all_df = self.all_df[mask].reset_index(drop=True)
+            
+            # 유효한 컬럼과 SMILES 컬럼만 유지
+            self.all_df = self.all_df[['smiles'] + self.filter_cols].reset_index(drop=True)
+
+        else:
+            x_path = os.path.join(data_folder, 'admet_X.tsv')
+            y_path = os.path.join(data_folder, 'admet_Y.tsv')
+            scaler_path = os.path.join(data_folder, 'scale_config.csv')
+            
+            x_df = pd.read_csv(x_path, sep='\t')
+            y_df = pd.read_csv(y_path, sep='\t')
+            
+            # 데이터 병합 및 전처리
+            self.all_df = pd.merge(x_df, y_df, on='id')
+
         
-        x_df = pd.read_csv(x_path, sep='\t')
-        y_df = pd.read_csv(y_path, sep='\t')
-        
-        # 데이터 병합 및 전처리
-        self.all_df = pd.merge(x_df, y_df, on='id')
         
         # 스케일링 적용
         if scaling:
@@ -269,21 +303,24 @@ class ChemMultiTaskDataModule:
     
     def _collate_fn(self, batch):
         """배치 데이터 조합 함수"""
-        if not batch:  # 빈 배치 처리
+        if not batch:
             raise ValueError("Empty batch encountered")
             
-        # 결과 준비
         if self.model_name is not None:
             # Transformer 모델 사용 시
-            # 범주형 특성 처리
-            cat_features = []
-            for i in range(len(self.filter_cols)):
-                cat_tensor = torch.cat([item['features'][i] for item in batch], dim=0)
-                cat_features.append(cat_tensor)
-            
-            # 정수형 및 실수형 특성 처리
-            int_tensor = torch.cat([item['features'][len(self.filter_cols)] for item in batch], dim=0)
-            float_tensor = torch.cat([item['features'][len(self.filter_cols)+1] for item in batch], dim=0)
+            if self.data_type == 'didb_reduce':
+                # 모든 특성을 float 타입으로 처리
+                float_tensor = torch.cat([item['features'][0] for item in batch], dim=0)
+                tensor_features = [float_tensor]  # 리스트로 감싸서 반환
+            else:
+                # 기존 처리 방식
+                cat_features = []
+                for i in range(len(self.filter_cols)):
+                    cat_tensor = torch.cat([item['features'][i] for item in batch], dim=0)
+                    cat_features.append(cat_tensor)
+                int_tensor = torch.cat([item['features'][len(self.filter_cols)] for item in batch], dim=0)
+                float_tensor = torch.cat([item['features'][len(self.filter_cols)+1] for item in batch], dim=0)
+                tensor_features = cat_features + [int_tensor, float_tensor]
             
             # 레이블 처리
             labels = torch.stack([item['labels'] for item in batch])
@@ -293,27 +330,28 @@ class ChemMultiTaskDataModule:
             attention_mask = torch.stack([item['attention_mask'] for item in batch])
             
             return {
-                'features': cat_features + [int_tensor, float_tensor],
+                'features': tensor_features,
                 'input_ids': input_ids,
                 'attention_mask': attention_mask,
                 'labels': labels
             }
         else:
             # Transformer 모델 없이 특성만 사용 시
-            # 범주형 특성 처리
-            cat_features = []
-            for i in range(len(self.filter_cols)):
-                cat_tensor = torch.cat([item['features'][i] for item in batch], dim=0)
-                cat_features.append(cat_tensor)
-            
-            # 정수형 및 실수형 특성 처리
-            int_tensor = torch.cat([item['features'][len(self.filter_cols)] for item in batch], dim=0)
-            float_tensor = torch.cat([item['features'][len(self.filter_cols)+1] for item in batch], dim=0)
+            if self.data_type == 'didb_reduce':
+                # 모든 특성을 float 타입으로 처리
+                float_tensor = torch.cat([item['features'][0] for item in batch], dim=0)
+                tensor_features = [float_tensor]  # 리스트로 감싸서 반환
+            else:
+                # 기존 처리 방식
+                cat_features = []
+                for i in range(len(self.filter_cols)):
+                    cat_tensor = torch.cat([item['features'][i] for item in batch], dim=0)
+                    cat_features.append(cat_tensor)
             
             # 레이블 처리
             labels = torch.stack([item['labels'] for item in batch])
             
             return {
-                'features': cat_features + [int_tensor, float_tensor],
+                'features': tensor_features,
                 'labels': labels
             }

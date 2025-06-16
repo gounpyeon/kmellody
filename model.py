@@ -25,17 +25,19 @@ class ChemBERTaMultiTask(nn.Module):
         task_types: Dict[str, str], 
         num_classes: Optional[Dict[str, int]] = None, 
         hidden_dim: int = 256, 
-        use_attention: bool = True
+        use_attention: bool = True,
+        data_type: str = 'normal'  # data_type 파라미터 추가
     ):
         """
         Args:
             model_name: ChemBERTa 모델 이름
             filter_cols: 범주형 특성 컬럼 목록
             task_list: 예측할 태스크 목록
-            task_types: 각 태스크의 유형 (classification 또는 regression)
+            task_types: 각 태스크의 유형 (classification 또는 regression / multi_layer_regression)
             num_classes: 각 분류 태스크의 클래스 수 (dict)
             hidden_dim: 은닉층 차원
             use_attention: 어텐션 메커니즘 사용 여부
+            data_type: 데이터 유형 (normal, didb_reduce 등)
         """
         super().__init__()
         
@@ -45,17 +47,7 @@ class ChemBERTaMultiTask(nn.Module):
         self.task_types = task_types
         self.hidden_dim = hidden_dim
         self.use_attention = use_attention
-        
-        # 범주형 특성 임베딩
-        self.cat_layers = nn.ModuleDict({
-            str(k): nn.Embedding(2, hidden_dim) for k in range(len(filter_cols))
-        })
-        
-        # 정수형 특성 층
-        self.int_layer = nn.Linear(5, hidden_dim)  # INT_COLS 길이
-        
-        # 실수형 특성 층
-        self.float_layer = nn.Linear(4, hidden_dim)  # FLOAT_COLS 길이
+        self.data_type = data_type  # data_type 저장
         
         # ChemBERTa 모델 설정
         if model_name:
@@ -65,92 +57,115 @@ class ChemBERTaMultiTask(nn.Module):
         else:
             self.encoder = None
             self.encoder_hidden = 0
-        
-        # 특성 통합
-        feature_dim = len(filter_cols) * hidden_dim + 2 * hidden_dim + self.encoder_hidden
-        
+
+        self.cat_layers = nn.ModuleDict({
+                str(k): nn.Embedding(2, hidden_dim) for k in range(len(filter_cols))
+            })
+
+        self.int_layer = nn.Linear(5, hidden_dim)  # INT_COLS 길이
+
+        self.float_layer = nn.Linear(4, hidden_dim)   # FLOAT_COLS 길이
+
+        # didb_reduce 모드가 아닐 때만 범주형 특성 임베딩 사용
+        if self.data_type != 'didb_reduce':
+            # 특성 통합
+            feature_dim = len(filter_cols) * hidden_dim + 2 * hidden_dim + self.encoder_hidden
+            self.attention_layer = nn.Linear(feature_dim, hidden_dim)
+        else:
+            # Attention_layer 출력차원  
+            self.attention_layer = nn.Linear(self.encoder_hidden, hidden_dim)
+            feature_dim = hidden_dim
+            
+
         if self.use_attention:
             # 어텐션 메커니즘 설정
-            self.attention_layer = nn.Linear(feature_dim, hidden_dim)
             self.attention_hidden_layer = nn.Linear(hidden_dim + len(filter_cols) + 2 + (1 if model_name else 0), hidden_dim)
             
             # 태스크별 출력 레이어
             self.task_heads = nn.ModuleDict()
-            
+            self.reg_tasks = []
+
             for task in task_list:
                 # 모듈 이름에 점(.)이 포함되면 안되므로 대체
                 safe_task_name = task.replace('.', '__')
                 
                 if task_types[task] == 'classification':
-                    # 분류 태스크
                     self.task_heads[safe_task_name] = nn.Linear(hidden_dim, num_classes[task] if num_classes else 2)
-                else:
-                    # 회귀 태스크
+                elif task_types[task] == 'regression':
+                    self.reg_tasks.append(task)
+                    self.task_heads['merged'] = nn.Linear(hidden_dim, len(self.filter_cols))
+                elif task_types[task] == 'multi_layer_regression':
                     self.task_heads[safe_task_name] = nn.Linear(hidden_dim, 1)
+
         else:
-            # 어텐션 없이 특성 통합
-            # 태스크별 출력 레이어
             self.task_heads = nn.ModuleDict()
-            
+            self.reg_tasks = []
+
             for task in task_list:
-                # 모듈 이름에 점(.)이 포함되면 안되므로 대체
                 safe_task_name = task.replace('.', '__')
-                
                 if task_types[task] == 'classification':
-                    # 분류 태스크
                     self.task_heads[safe_task_name] = nn.Linear(feature_dim, num_classes[task] if num_classes else 2)
-                else:
-                    # 회귀 태스크
+                elif task_types[task] == 'regression':
+                    self.reg_tasks.append(task)
+                    self.task_heads['merged'] = nn.Linear(feature_dim, len(self.filter_cols))
+                elif task_types[task] == 'multi_layer_regression':
                     self.task_heads[safe_task_name] = nn.Linear(feature_dim, 1)
     
     def forward(self, features, input_ids=None, attention_mask=None):
         """순전파"""
-        # 범주형 특성 처리
-        cat_embs = []
-        for i, k in enumerate(range(len(self.filter_cols))):
-            if features and i < len(features):
-                cat_embs.append(self.cat_layers[str(k)](features[i]))
+        if self.data_type != 'didb_reduce':
+            # 기존 처리 방식
+            # 범주형 특성 처리
+            cat_embs = []
+            for i, k in enumerate(range(len(self.filter_cols))):
+                if features and i < len(features):
+                    cat_embs.append(self.cat_layers[str(k)](features[i]))
+                else:
+                    device = input_ids.device if input_ids is not None else torch.device('cpu')
+                    batch_size = input_ids.size(0) if input_ids is not None else 1
+                    cat_embs.append(torch.zeros((batch_size, self.hidden_dim), device=device))
+            
+            # 정수형 특성 처리
+            if features and len(features) > len(self.filter_cols):
+                int_value = self.int_layer(features[len(self.filter_cols)].float())
+                float_value = self.float_layer(features[len(self.filter_cols)+1].float())
             else:
-                # 특성이 없는 경우 빈 텐서로 처리
                 device = input_ids.device if input_ids is not None else torch.device('cpu')
                 batch_size = input_ids.size(0) if input_ids is not None else 1
-                cat_embs.append(torch.zeros((batch_size, self.hidden_dim), device=device))
-        
-        # 정수형 특성 처리
-        if features and len(features) > len(self.filter_cols):
-            int_value = self.int_layer(features[len(self.filter_cols)].float())
+                int_value = torch.zeros((batch_size, self.hidden_dim), device=device)
+
+            # 실수형 특성 처리
+            if features and len(features) > len(self.filter_cols) + 1:
+                float_value = self.float_layer(features[len(self.filter_cols) + 1].float())
+            else:
+                device = input_ids.device if input_ids is not None else torch.device('cpu')
+                batch_size = input_ids.size(0) if input_ids is not None else 1
+                float_value = torch.zeros((batch_size, self.hidden_dim), device=device)
+            
+            # ChemBERTa 인코더 출력 (있는 경우)
+            if self.encoder and input_ids is not None:
+                encoder_output = self.encoder(input_ids, attention_mask=attention_mask).pooler_output
+                all_features = cat_embs + [int_value, float_value, encoder_output]
+            else:
+                all_features = cat_embs + [int_value, float_value]
+
+            # 모든 특성 연결
+            if cat_embs:              # 필터 특성이 있을 때만 concat
+                cat_values = torch.cat(cat_embs, dim=-1)
+            else:                      # 필터 컬럼이 0개인 data_type='none' 설정
+                batch_size = input_ids.size(0)
+                device = input_ids.device
+                cat_values = torch.zeros((batch_size, 0), device=device)   # 길이 0 텐서
+            
+            if self.encoder and input_ids is not None:
+                feature_merged = torch.cat([cat_values, int_value, float_value, encoder_output], dim=-1)
+            else:
+                feature_merged = torch.cat([cat_values, int_value, float_value], dim=-1)
+                
         else:
-            device = input_ids.device if input_ids is not None else torch.device('cpu')
-            batch_size = input_ids.size(0) if input_ids is not None else 1
-            int_value = torch.zeros((batch_size, self.hidden_dim), device=device)
-        
-        # 실수형 특성 처리
-        if features and len(features) > len(self.filter_cols) + 1:
-            float_value = self.float_layer(features[len(self.filter_cols) + 1].float())
-        else:
-            device = input_ids.device if input_ids is not None else torch.device('cpu')
-            batch_size = input_ids.size(0) if input_ids is not None else 1
-            float_value = torch.zeros((batch_size, self.hidden_dim), device=device)
-        
-        # ChemBERTa 인코더 출력 (있는 경우)
-        if self.encoder and input_ids is not None:
+            # didb_reduce 모드에서는 float 특성만 처리
             encoder_output = self.encoder(input_ids, attention_mask=attention_mask).pooler_output
-            all_features = cat_embs + [int_value, float_value, encoder_output]
-        else:
-            all_features = cat_embs + [int_value, float_value]
-        
-        # 모든 특성 연결
-        if cat_embs:              # 필터 특성이 있을 때만 concat
-            cat_values = torch.cat(cat_embs, dim=-1)
-        else:                      # 필터 컬럼이 0개인 data_type='none' 설정
-            batch_size = input_ids.size(0)
-            device = input_ids.device
-            cat_values = torch.zeros((batch_size, 0), device=device)   # 길이 0 텐서
-        
-        if self.encoder and input_ids is not None:
-            feature_merged = torch.cat([cat_values, int_value, float_value, encoder_output], dim=-1)
-        else:
-            feature_merged = torch.cat([cat_values, int_value, float_value], dim=-1)
+            feature_merged = self.attention_layer(encoder_output)
         
         # 어텐션 메커니즘 적용 (사용하는 경우)
         if self.use_attention:
@@ -159,7 +174,7 @@ class ChemBERTaMultiTask(nn.Module):
             
             # 특성 스택 생성
             if self.encoder and input_ids is not None:
-                feature_stack = torch.stack(cat_embs + [int_value, float_value, encoder_output], dim=1)
+                feature_stack = torch.stack(cat_embs + [int_value, float_value, feature_merged], dim=1)
             else:
                 feature_stack = torch.stack(cat_embs + [int_value, float_value], dim=1)
             
@@ -188,16 +203,21 @@ class ChemBERTaMultiTask(nn.Module):
                     task_outputs[task] = self.task_heads[safe_task_name](final_hidden).squeeze(-1)
             
             return task_outputs, attention_scores.squeeze(dim=-1)
+        
         else:
             # 어텐션 없이 출력 계산
             task_outputs = {}
+            if len(self.reg_tasks) > 0:
+                reg_outputs = self.task_heads['merged'](feature_merged)
+                task_outputs = {f'{task}': reg_outputs[:, i] for i, task in enumerate(self.reg_tasks)}
+
             for task in self.task_list:
                 safe_task_name = task.replace('.', '__')
                 if self.task_types[task] == 'classification':
                     task_outputs[task] = self.task_heads[safe_task_name](feature_merged)
-                else:
+                elif self.task_types[task] == 'multi_layer_regression':
                     task_outputs[task] = self.task_heads[safe_task_name](feature_merged).squeeze(-1)
-            
+
             return task_outputs, None
 
 
@@ -216,7 +236,8 @@ class ChemBERTaMultiTaskLightning(pl.LightningModule):
         learning_rate: float = 2e-5,
         weight_decay: float = 0.01,
         warmup_steps: int = 500,
-        task_weights: Optional[Dict[str, float]] = None
+        task_weights: Optional[Dict[str, float]] = None,
+        data_type: str = 'normal'  # data_type 파라미터 추가
     ):
         """
         Args:
@@ -231,6 +252,7 @@ class ChemBERTaMultiTaskLightning(pl.LightningModule):
             weight_decay: 가중치 감쇠
             warmup_steps: 워밍업 스텝 수
             task_weights: 각 태스크의 손실 가중치 (dict)
+            data_type: 데이터 유형 (normal, didb_reduce 등)
         """
         super().__init__()
         
@@ -244,7 +266,8 @@ class ChemBERTaMultiTaskLightning(pl.LightningModule):
             task_types=task_types,
             num_classes=num_classes,
             hidden_dim=hidden_dim,
-            use_attention=use_attention
+            use_attention=use_attention,
+            data_type=data_type  # data_type 전달
         )
         
         self.task_list = task_list
@@ -374,7 +397,7 @@ class ChemBERTaMultiTaskLightning(pl.LightningModule):
                         for task in self.task_list if self.task_types[task] == 'classification'}
         
         all_predictions.update({task: {'labels': [], 'preds': []} 
-                            for task in self.task_list if self.task_types[task] == 'regression'})
+                            for task in self.task_list if self.task_types[task] == 'regression' or self.task_types[task] == 'multi_layer_regression'})
         
         for output in self.validation_step_outputs:
             for task in self.task_list:
@@ -442,7 +465,7 @@ class ChemBERTaMultiTaskLightning(pl.LightningModule):
                         for task in self.task_list if self.task_types[task] == 'classification'}
         
         all_predictions.update({task: {'labels': [], 'preds': []} 
-                            for task in self.task_list if self.task_types[task] == 'regression'})
+                            for task in self.task_list if self.task_types[task] == 'regression' or self.task_types[task] == 'multi_layer_regression'})
         
         for output in self.test_step_outputs:
             for task in self.task_list:

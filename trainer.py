@@ -8,7 +8,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from typing import Dict, Optional, List
 from model import ChemBERTaMultiTaskLightning
 from dataset import ChemMultiTaskDataModule
-from utils import get_task_list, NORMAL_FILTER_COLS, REDUCE_FILTER_COLS, INT_COLS, FLOAT_COLS
+from utils import get_task_list, NORMAL_FILTER_COLS, REDUCE_FILTER_COLS, DIDB_FILTER_COLS, DIDB_REDUCE_FILTER_COLS, INT_COLS, FLOAT_COLS
 from transformers import AutoTokenizer
 import numpy as np
 import shutil
@@ -47,7 +47,16 @@ class ChemBERTaTrainer:
         self.early_stopping_patience = early_stopping_patience
 
         self.task_list = get_task_list(task_type, data_type)
-        self.task_types = {task: 'classification' if task_type == 'cls' else 'regression' for task in self.task_list}
+        # 태스크별 유형을 지정 (classification, regression, multi_reg 지원)
+        if task_type == 'cls':
+            self.task_types = {task: 'classification' for task in self.task_list}
+        elif task_type == 'reg':
+            self.task_types = {task: 'regression' for task in self.task_list}
+        elif task_type == 'multi_reg':
+            self.task_types = {task: 'multi_layer_regression' for task in self.task_list}
+        else:
+            raise ValueError(f"알 수 없는 task_type: {task_type}")
+        
         self.task_weights = task_weights or {task: 1.0 for task in self.task_list}
 
         self.model = None
@@ -85,12 +94,16 @@ class ChemBERTaTrainer:
             filter_cols = NORMAL_FILTER_COLS
         elif self.data_type == 'reduce':
             filter_cols = REDUCE_FILTER_COLS
+        elif self.data_type == 'didb':
+            filter_cols = DIDB_FILTER_COLS
+        elif self.data_type == 'didb_reduce':
+            filter_cols = DIDB_REDUCE_FILTER_COLS
         elif self.data_type == 'none':
             filter_cols = []
         else:
             raise ValueError(f"Unknown data_type: {self.data_type}")
 
-        if self.data_type == 'none':
+        if self.data_type == 'none' or self.data_type == 'didb_reduce':
             self.use_attention = False
 
         self.model = ChemBERTaMultiTaskLightning(
@@ -104,8 +117,12 @@ class ChemBERTaTrainer:
             learning_rate=self.learning_rate,
             weight_decay=self.weight_decay,
             warmup_steps=self.warmup_steps,
-            task_weights=self.task_weights
+            task_weights=self.task_weights,
+            data_type=self.data_type
         )
+
+        if os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir, exist_ok=True)
 
         logger = TensorBoardLogger(save_dir=self.output_dir, name="logs")
 
@@ -207,6 +224,10 @@ class ChemBERTaTrainer:
                     filter_cols = NORMAL_FILTER_COLS
                 elif self.data_type == 'reduce':
                     filter_cols = REDUCE_FILTER_COLS
+                elif self.data_type == 'didb':
+                    filter_cols = DIDB_FILTER_COLS
+                elif self.data_type == 'didb_reduce':
+                    filter_cols = DIDB_REDUCE_FILTER_COLS   
                 else:  # 'none'
                     filter_cols = []
                 

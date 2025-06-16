@@ -17,6 +17,28 @@ NORMAL_FILTER_COLS = [
 
 REDUCE_FILTER_COLS = ["bioavailability"]
 
+DIDB_FILTER_COLS = [
+    "logP",
+    "pKa",
+    "Solubility",
+    "Permeability", 
+    "Plasma_protein_binding",
+    "fm_in_vitro",
+    "fu_in_vitro",
+    "CYP450_Enzyme"
+]
+
+DIDB_REDUCE_FILTER_COLS = [
+    "logP",
+    # "pKa",
+    # "Solubility",
+    # "Permeability", 
+    # "Plasma_protein_binding",
+    # "fm_in_vitro",
+    # "fu_in_vitro",
+    # "CYP450_Enzyme"
+]
+
 NORMAL_CLS_COLS = [
     'hia', 'bbb', 'caco2', 'p_glycoprotein_substrate',
     'p_glycoprotein_inhibitor_1', 'p_glycoprotein_inhibitor_2',
@@ -73,7 +95,7 @@ def standard_scaling(df: pd.DataFrame, scaler_path: str) -> pd.DataFrame:
                 scaled_df = df.copy()
                 
                 # 수치형 특성 표준화
-                for col in INT_COLS + FLOAT_COLS:
+                for col in INT_COLS + FLOAT_COLS + DIDB_FILTER_COLS:
                     if col in df.columns:
                         feature_rows = scaler_df[scaler_df['feature'] == col]
                         if len(feature_rows) > 0:
@@ -101,7 +123,7 @@ def _create_new_scaler(df, scaler_path):
     scaler_data = []
     
     # 수치형 특성 표준화
-    for col in INT_COLS + FLOAT_COLS:
+    for col in INT_COLS + FLOAT_COLS + DIDB_FILTER_COLS:
         if col in df.columns:
             mean = df[col].mean()
             std = df[col].std()
@@ -207,7 +229,7 @@ def get_task_list(task_type: str, data_type: str) -> List[str]:
     태스크 유형과 데이터 유형에 따른 태스크 목록을 반환합니다.
     
     Args:
-        task_type: 태스크 유형 ('cls' 또는 'reg')
+        task_type: 태스크 유형 ('cls' 또는 'reg' 또는 'multi_reg')
         data_type: 데이터 유형 ('normal' 또는 'reduce')
         
     Returns:
@@ -219,9 +241,13 @@ def get_task_list(task_type: str, data_type: str) -> List[str]:
         y_cols_base = REDUCE_CLS_COLS
     elif data_type == 'none':  # none
         y_cols_base = NORMAL_CLS_COLS
-    
+    elif data_type == 'didb':
+        y_cols_base = DIDB_FILTER_COLS
+    elif data_type == 'didb_reduce':
+        y_cols_base = DIDB_REDUCE_FILTER_COLS
+
     # 태스크 유형에 따른 출력 컬럼 설정
     if task_type == 'cls':
         return [f'{x}.cls' for x in y_cols_base]
-    else:  # reg
+    else:  # reg and multi_reg
         return y_cols_base
