@@ -1,0 +1,18 @@
+{
+  "method": "grid",
+  "metric": {
+    "name": "val_loss",
+    "goal": "minimize"
+  },
+  "parameters": {
+    "task_type": {
+      "values": ["reg", "multi_reg"]
+    },
+    "missing_label_strategy": {
+      "values": ["any", "all"]
+    },
+    "data_type": {
+      "values": ["raw", "admet", "portal", "all"]
+    }
+  }
+} 
