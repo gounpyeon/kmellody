@@ -8,7 +8,7 @@ from copy import deepcopy
 
 from _modules.trainer import ChemBERTaTrainer
 
-WANDB_API_KEY = "c5fb030975fdfa7d53e0d494eea32a22f5dbacf8"
+WANDB_API_KEY = "YOUR_API_KEY"
 
 def clear_gpu_memory():
     gc.collect()
