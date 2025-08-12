@@ -4,7 +4,7 @@
 set -e  # 에러 발생시 스크립트 중단
 export CUDA_VISIBLE_DEVICES=0
 
-echo "=== Federated Learning 시작 ==="
+echo "=== Federated Learning Simulation 시작 ==="
 
 # 그룹 1 (첫 번째 시드)
 echo "--- 그룹 1 훈련 시작 ---"
