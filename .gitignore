@@ -12,6 +12,7 @@ results/
 # ────────── TensorBoard / WandB logs ──────────
 events.out.tfevents.*
 lightning_logs/
+wandb/
 
 # ────────── Misc ──────────
 *.log
